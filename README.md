@@ -47,10 +47,10 @@ to save the changes in the staging area; and you can use `git status` to check w
 
 -----
 
-When you want to push the local changes to your own branch in the reomote repository, do
+The first time you want to push the local changes to your own branch in the reomote repository, do
 
 ```
-git push 
+git push --set-upstream origin remote-branch
 ```
 
 You can check on the github page if the changes are reflected.
