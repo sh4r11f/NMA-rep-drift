@@ -1,7 +1,7 @@
 # NMA-rep-drift
 Repo for analysis of representational drift with Allen institute data (NMA Sachertorte Pod Group 1)
 
-## mini Github colaboration guide
+## Mini Github colaboration guide
 
 First, to make a local copy of the repo, past the below code in command line:
 
@@ -60,7 +60,22 @@ You can check on the github page if the changes are reflected.
 -----
 
 
-## mini function sharing guide
+## Mini function sharing guide
+
+When we code on a notebook, we can always convert it to a python script by download it as a python file:
+
+1. In Jupyter lab, go to File Menu. Select "Export Notebook as" and then choose the "Export Notebook to Executable Script" option.
+
+2. For Jupyter notebook, there is "Download as" option in File menu of Jupyter notebook. You can select Python (.py) from the list of available options.
+
+## Access data folders in Google Drive to a colab notebook:
 
 
-## mount folders in Google Drive to a colab notebook
+``` python 
+from google.colab import drive
+
+# allow Colab to access google drive:
+drive.mount('/content/drive')
+
+file_path = 'drive/My Drive/data.csv'
+```
