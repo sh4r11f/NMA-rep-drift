@@ -68,7 +68,7 @@ When we code on a notebook, we can always convert it to a python script by downl
 
 2. For Jupyter notebook, there is "Download as" option in File menu of Jupyter notebook. You can select Python (.py) from the list of available options.
 
-## Access data folders in Google Drive to a colab notebook:
+## Access data folders in Google Drive from a Colab notebook:
 
 
 ``` python 
