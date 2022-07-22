@@ -1,0 +1,30 @@
+drifting_gratings
+Total number of experiments: 78
+Setting number of containers: 118
+Sessions: {'three_session_A'}
+
+locally_sparse_noise
+Total number of experiments: 23
+Setting number of containers: 118
+Sessions: {'three_session_C'}
+
+locally_sparse_noise_4deg
+Total number of experiments: 55
+Setting number of containers: 118
+Sessions: {'three_session_C2'}
+
+locally_sparse_noise_8deg
+Total number of experiments: 55
+Setting number of containers: 118
+Sessions: {'three_session_C2'}
+
+natural_movie_one
+Total number of experiments: 234
+Setting number of containers: 118
+Sessions: {'three_session_A', 'three_session_B', 'three_session_C', 'three_session_C2'}
+
+natural_movie_three
+Total number of experiments: 78
+Setting number of containers: 118
+Sessions: {'three_session_A'}
+
