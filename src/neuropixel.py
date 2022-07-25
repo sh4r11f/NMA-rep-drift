@@ -10,6 +10,7 @@ representational drift analysis.
 import shutil
 from pathlib import Path
 from typing import Union
+from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
@@ -47,23 +48,70 @@ class Neuropixel:
         # Load the project-level cache
         self._cache = EcephysProjectCache.from_warehouse(manifest=str(self.manifest_path))
 
-        # Initiate parameters
-        self._sessions = list()
-        self._data = dict()
+        # Initiate data vars
+        self._data = None
+        self._session = None
+
+        # Other parameters
+        self.snr_thr_percent = 25
 
     @property
     def cache(self):
         """ Getter for experiment cache"""
         return self._cache
 
-    def get_count_tables(self):
+    @property
+    def session(self):
+        """ Getter for current session"""
+        return self._session
+
+    @session.setter
+    def session(self, session_id):
+        """ Selects a particular session as the current session of the data"""
+        self._session = session_id
+
+    def get_spikes_table(self):
         """
         Collects all the relevant parts of a data and puts them in a pandas DataFrame
         """
+        pass
+
+    def download_ecephy_data(self):
+        """
+        Downloads all the Neuropixel data.
+
+        Returns
+        -------
+        None
+        """
+        # Session metadata
+        sessions = self.cache.get_session_table()
+
+        # load individual sessions in the table
+        s = 1
+        for sess, row in tqdm(sessions.iterrows()):
+
+            # Print out what's happening
+            print(f"Downloading session {sess} (#{s})")
+
+            # to check for bad files
+            truncated_file = True
+            sess_path = self.DATA_DIR / f'session_{str(sess)}'
+
+            # load the data
+            while truncated_file:
+                session = self.cache.get_session_data(sess)
+                try:
+                    print(session.specimen_name)
+                    s += 1
+                    truncated_file = False
+                except OSError:
+                    shutil.rmtree(sess_path)
+                    print(" Truncated spikes file, re-downloading")
 
     def load_sessions(self, session_id: Union[int, list, str]):
         """
-        Loads neuropixel session data. The session_id can be specified as:
+        Loads Neuropixel session data. The session_id can be specified as:
 
         1. An integer: session number
         2. A list: a bunch of session numbers
@@ -84,13 +132,11 @@ class Neuropixel:
 
         # Load for a single session
         if isinstance(session_id, int):
-            self._sessions.append(session_id)
             self._data[session_id] = self.cache.get_session_data(session_id)
 
         # Load for a list of sessions
         elif isinstance(session_id, list):
             for sess in session_id:
-                self._sessions.append(sess)
                 self._data[sess] = self.cache.get_session_data(sess)
 
         # Load for a session type
@@ -101,25 +147,30 @@ class Neuropixel:
 
             # load individual sessions in the table
             for sess, row in _sessions.iterrows():
+                self._data[sess] = self.cache.get_session_data(sess)
 
-                # to check for bad files
-                truncated_file = True
-                directory = self.DATA_DIR / f'session_{str(sess)}'
+    def _get_roi_idx(self, roi: str):
+        """
+        Identifies units within a brain region
 
-                # load the data
-                while truncated_file:
-                    session = self.cache.get_session_data(sess)
-                    try:
-                        print(session.specimen_name)
-                        truncated_file = False
-                    except OSError:
-                        shutil.rmtree(directory)
-                        print(" Truncated spikes file, re-downloading")
+        Parameters
+        ----------
+        roi : str
 
-        else:
-            raise ValueError("Invalid session id(s).")
+        Returns
+        -------
+        np.array
+        """
+        # select unit snr
+        q25 = np.percentile(self._data.units.snr, self.snr_thr_percent)
 
-    def get_stim_idx(self, stim_type: str, condition: str):
+        roi_idx = self._data.units[
+            (self._data.units.snr > q25) & (self._data.units.ecephys_structure_acronym == roi)
+            ].index.values
+
+        return roi_idx
+
+    def _get_stim_idx(self, stim_type: str, condition: str):
         """
 
         Parameters
@@ -131,3 +182,15 @@ class Neuropixel:
         -------
 
         """
+        # Get the condition
+        stim_id = self._data.stimulus_conditions.loc[
+            self._data.stimulus_conditions.stimulus_name == stim_type
+            ].index.values[0]
+
+        # Get the indices
+        stim_idx = self._data.stimulus_presentations.loc[
+            self._data.stimulus_presentations.stimulus_condition_id == stim_id
+            ].index.values
+
+        return stim_idx
+
