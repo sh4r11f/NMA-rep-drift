@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
@@ -51,6 +52,9 @@ class Neuropixel:
         # Initiate data vars
         self._data = None
         self._session = None
+        self._all_sessions = [
+            int(f.name.split('_')[1]) for f in self.DATA_DIR.iterdir() if ('session' in f.name and 'csv' not in f.name)
+        ]
 
         # Other parameters
         self.snr_thr_percent = 25
@@ -193,4 +197,57 @@ class Neuropixel:
             ].index.values
 
         return stim_idx
+
+    def _pupil_run_average(self, bin_size: int):
+        """
+        Finds the average running speed and pupil size of all subjects in some time bin duration.
+
+        Parameters
+        ----------
+        bin_size : int
+            in seconds.
+
+        Returns
+        -------
+
+        """
+        # Make time bins
+        time_bins = np.arange(0, 10000, bin_size)
+
+        # Initiate stuff
+        pupil_means = np.zeros((len(self._all_sessions), 10000))
+        run_means = np.zeros((len(self._all_sessions), 10000))
+
+        for s, session in enumerate(self._all_sessions):
+
+            # load session metadata
+            _data = self.cache.get_session_data(session)
+
+            # get pupil and running data
+            pupil = _data.get_pupil_data()
+            run = _data.running_speed()
+            run["speed"] = abs(run["velocity"])  # absolute value of speed
+
+            # Get the pupil mean
+            pupil_mean = np.array(
+                [pupil.loc[(pupil.index > b) & (pupil.index < b + 1), "raw_pupil_area"].mean() for b in time_bins]
+            )
+            pupil_normal = stats.zscore(pupil_mean, nan_policy='omit')  # normalize
+            pupil_normal[pupil_normal > 5] = 0  # get rid of very large values
+
+            # get running speed mean for each bin
+            run_mean = np.array(
+                [run.loc[(run.start_time > b) & (run.end_time < b + 1), "speed"].mean() for b in time_bins]
+            )
+            # run_mean = run_mean[~np.isnan(run_mean)]
+            run_normal = stats.zscore(run_mean, nan_policy='omit')  # normalize
+
+            # save
+            pupil_means[s] = pupil_mean
+            run_means[s] = run_mean
+
+        return pupil_means, run_means
+
+
+
 
