@@ -71,8 +71,9 @@ class Neuropixel:
 
     @session.setter
     def session(self, session_id):
-        """ Selects a particular session as the current session of the data"""
+        """ Selects a particular session as the current session of the experiment and loads its data"""
         self._session = session_id
+        self._data = self.cache.get_session_data(session_id)
 
     def get_spikes_table(self):
         """
@@ -174,31 +175,213 @@ class Neuropixel:
 
         return roi_idx
 
-    def _get_stim_idx(self, stim_type: str, condition: str):
+    def _get_stim_idx(self, stim_type: str):
         """
+        Retrieves indices of repeated stimulus presentation.
 
         Parameters
         ----------
-        stim_type
-        condition
+        stim_type : str
+            Any stimulus that's not a movie!
 
         Returns
         -------
-
+        np.array : (n_repeats,)
         """
-        # Get the condition
+        # Select the condition
         stim_id = self._data.stimulus_conditions.loc[
             self._data.stimulus_conditions.stimulus_name == stim_type
             ].index.values[0]
 
         # Get the indices
-        stim_idx = self._data.stimulus_presentations.loc[
+        repeat_idx = self._data.stimulus_presentations.loc[
             self._data.stimulus_presentations.stimulus_condition_id == stim_id
             ].index.values
 
-        return stim_idx
+        return repeat_idx
 
-    def _pupil_run_average(self, bin_size: int):
+    def _get_movie_idx(self, movie_type: str, sec: int):
+        """
+        Retrieves index of presentations for the first frame of a movie in a second.
+
+        Parameters
+        ----------
+        movie_type : str
+            Which movie
+
+        sec : int
+            Which second.
+
+        Returns
+        -------
+        np.array : (n_repeats,)
+        """
+        # Find the max number of frames
+        max_frame = self._data.stimulus_conditions.loc[
+            self._data.stimulus_conditions.stimulus_name == movie_type, "frame"
+        ].max()
+
+        # Get the number for the first frame of each second
+        n_first_frames = np.arange(0, max_frame, 30).astype(int)
+
+        # Select condition indices
+        frame_id = self._data.stimulus_conditions.loc[
+            self._data.stimulus_conditions.stimulus_name == movie_type
+            ].index.values[n_first_frames[sec - 1]]
+
+        # Get presentation indices
+        repeat_idx = self._data.stimulus_presentations.loc[
+            self._data.stimulus_presentations.stimulus_condition_id == frame_id
+            ].index.values
+
+        return repeat_idx
+
+    def get_stim_spike_count(self, stim_type: str, roi: str):
+        """
+        Counts the number of spikes in response to repetitions of some stimulus.
+
+        Parameters
+        ----------
+        stim_type : str
+            Stimulus (drifting_grating, etx)
+
+        roi : str
+            Name of the brain region
+
+        Returns
+        -------
+        pd.Dataframe
+        """
+        # Get indices
+        repeat_idx = self._get_stim_idx(stim_type)
+        roi_idx = self._get_roi_idx(roi)
+
+        # Get the counts
+        time_step = .001
+        time_bins = np.arange(0, 0.5 + time_step, time_step)
+        spikes = self._data.presentationwise_spike_counts(
+            stimulus_presentation_ids=repeat_idx,
+            unit_ids=roi_idx,
+            bin_edges=time_bins
+        )
+        # Convert xarray to dataframe
+        spikes = spikes.to_dataframe()
+
+        # Add stimulus properties
+        cols = ["start_time", "stop_time", "stimulus_block", "orientation", "temporal_frequency", "stimulus_name",
+                "stimulus_condition_id"]
+        spikes = pd.merge(
+            spikes,
+            self._data.stimulus_presentations[cols],
+            left_on="stimulus_presentation_id",
+            right_index=True
+        )
+
+        # Count the number of spikes in all time_relative_to_stimulus_onset s
+        grp_cols = ["stimulus_presentation_id", "unit_id"] + cols
+        df = spikes.groupby(grp_cols, as_index=False)["spike_counts"].sum()
+
+        # Add info about the roi and which second of the movie
+        df["roi"] = roi
+
+        # Add running speed and pupil
+        self._add_behavioral(df, repeat_idx)
+
+        return df
+
+    def get_movie_spike_count(self, movie_type: str, roi: str, sec: int):
+        """
+        Counts the number of spikes in response to a window of 1s of a movie.
+
+        movie_type : str
+        roi : str
+        sec : int
+
+        Returns
+        -------
+        pd.Dataframe
+        """
+        # Make bins
+        time_step = 0.001
+        time_bins = np.arange(0, 1 + time_step, time_step)
+
+        # Get indices
+        repeat_idx = self._get_movie_idx(movie_type, sec)
+        roi_idx = self._get_roi_idx(roi)
+
+        # Get the counts
+        spikes = self._data.presentationwise_spike_counts(
+            stimulus_presentation_ids=repeat_idx,
+            unit_ids=roi_idx,
+            bin_edges=time_bins
+        )
+
+        # Convert xarray to dataframe
+        spikes = spikes.to_dataframe()
+
+        # Add stuff to the dataframe
+        cols = ["start_time", "stop_time", "stimulus_block", "stimulus_name", "stimulus_condition_id"]
+        spikes = pd.merge(
+            spikes, self._data.stimulus_presentations[cols],
+            left_on="stimulus_presentation_id",
+            right_index=True
+        )
+        spikes.reset_index(inplace=True)
+
+        # Sum the number of spikes during 1s (over all time_relative_to_stimulus_onset times)
+        grp_cols = ["stimulus_presentation_id", "unit_id"] + cols
+        df = spikes.groupby(grp_cols, as_index=False)["spike_counts"].sum()
+
+        # Add info about the roi and which second of the movie
+        df["roi"] = roi
+        df["movie_sec"] = sec
+
+        # Add running speed
+        self._add_behavioral(df, repeat_idx)
+
+        return df
+
+    def _add_behavioral(self, df, repeat_idx):
+        """
+        Adds running speed and pupil area to a dataframe based on time of stimulus presentation
+
+        Parameters
+        ----------
+        df : pd.Dataframe
+            Input dataframe to be modified
+
+        repeat_idx : np.array
+            Index of repetitions of the stimulus
+
+        Returns
+        -------
+        None
+        """
+        # Add running speed
+        run_data = self._data.running_speed
+        for idx in repeat_idx:
+            start = df.loc[df.stimulus_presentation_id == idx, "start_time"].mean()  # these are all the same number
+            stop = start + 1
+            median_speed = run_data.loc[
+                (run_data["start_time"] > start) & (run_data["end_time"] < stop), "speed"
+            ].median()
+            mean_speed = run_data.loc[
+                (run_data["start_time"] > start) & (run_data["end_time"] < stop), "speed"
+            ].mean()
+            df.loc[df.stimulus_presentation_id == idx, "median_speed"] = median_speed
+            df.loc[df.stimulus_presentation_id == idx, "mean_speed"] = mean_speed
+
+        # Add pupil area
+        pupil_data = self._data.get_screen_gaze_data()[["raw_pupil_area"]]
+        for idx in repeat_idx:
+            start = df.loc[df.stimulus_presentation_id == idx, "start_time"].mean()
+            stop = start + 1
+            area = pupil_data.loc[
+                (pupil_data.index > start) & (pupil_data.index < stop), "raw_pupil_area"
+            ].mean()
+            df.loc[df.stimulus_presentation_id == idx, "pupil_area"] = area
+
+    def overall_pupil_run_average(self, bin_size: int):
         """
         Finds the average running speed and pupil size of all subjects in some time bin duration.
 
@@ -215,36 +398,41 @@ class Neuropixel:
         time_bins = np.arange(0, 10000, bin_size)
 
         # Initiate stuff
-        pupil_means = np.zeros((len(self._all_sessions), 10000))
-        run_means = np.zeros((len(self._all_sessions), 10000))
+        pupil_means = np.zeros((len(self._all_sessions), len(time_bins)))
+        run_means = np.zeros((len(self._all_sessions), len(time_bins)))
+        err = False
 
-        for s, session in enumerate(self._all_sessions):
+        for s, session in tqdm(enumerate(self._all_sessions)):
 
             # load session metadata
             _data = self.cache.get_session_data(session)
 
             # get pupil and running data
-            pupil = _data.get_pupil_data()
-            run = _data.running_speed()
-            run["speed"] = abs(run["velocity"])  # absolute value of speed
+            try:
+                pupil = _data.get_screen_gaze_data()[["raw_pupil_area"]]
+                # Get the pupil mean
+                pupil_mean = np.array(
+                    [pupil.loc[(pupil.index > b) & (pupil.index < b + 1), "raw_pupil_area"].mean() for b in time_bins]
+                )
+            except TypeError:
+                err = True
+                print(f"Session {session} has no eye tracing data!")
 
-            # Get the pupil mean
-            pupil_mean = np.array(
-                [pupil.loc[(pupil.index > b) & (pupil.index < b + 1), "raw_pupil_area"].mean() for b in time_bins]
-            )
-            pupil_normal = stats.zscore(pupil_mean, nan_policy='omit')  # normalize
-            pupil_normal[pupil_normal > 5] = 0  # get rid of very large values
+            try:
+                run = _data.running_speed
+                run["speed"] = abs(run["velocity"])  # absolute value of speed
+                # get running speed mean for each bin
+                run_mean = np.array(
+                    [run.loc[(run.start_time > b) & (run.end_time < b + 1), "speed"].mean() for b in time_bins]
+                )
+            except TypeError:
+                err = True
+                print(f"Session {session} has no running data")
 
-            # get running speed mean for each bin
-            run_mean = np.array(
-                [run.loc[(run.start_time > b) & (run.end_time < b + 1), "speed"].mean() for b in time_bins]
-            )
-            # run_mean = run_mean[~np.isnan(run_mean)]
-            run_normal = stats.zscore(run_mean, nan_policy='omit')  # normalize
-
-            # save
-            pupil_means[s] = pupil_mean
-            run_means[s] = run_mean
+            # save only if both exist
+            if not err:
+                run_means[s] = run_mean
+                pupil_means[s] = pupil_mean
 
         return pupil_means, run_means
 
