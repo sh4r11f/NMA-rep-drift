@@ -35,9 +35,13 @@ class Neuropixel:
     """
     def __init__(self, data_dir: Union[str, Path] = None):
 
-        # Specify data directory
+        # Specify directories
+        self.HOME = Path().cwd().parent
+        self.SAVE_DIR = self.HOME / "data"
+        self.FIG_DIR = self.HOME / "figures"
+
         if data_dir is None:
-            self.DATA_DIR = Path().cwd().parent / "data" / "Ecephy"
+            self.DATA_DIR = self.HOME / "data" / "Ecephy"
         elif isinstance(data_dir, str):
             self.DATA_DIR = Path(data_dir)
         else:
@@ -52,9 +56,9 @@ class Neuropixel:
         # Initiate data vars
         self._data = None
         self._session = None
-        self._all_sessions = [
+        self._all_sessions = sorted([
             int(f.name.split('_')[1]) for f in self.DATA_DIR.iterdir() if ('session' in f.name and 'csv' not in f.name)
-        ]
+        ])
 
         # Other parameters
         self.snr_thr_percent = 25
@@ -167,10 +171,10 @@ class Neuropixel:
         np.array
         """
         # select unit snr
-        q25 = np.percentile(self._data.units.snr, self.snr_thr_percent)
+        # q25 = np.percentile(self._data.units.snr, self.snr_thr_percent)
 
         roi_idx = self._data.units[
-            (self._data.units.snr > q25) & (self._data.units.ecephys_structure_acronym == roi)
+            (self._data.units.ecephys_structure_acronym == roi)
             ].index.values
 
         return roi_idx
@@ -222,7 +226,8 @@ class Neuropixel:
         ].max()
 
         # Get the number for the first frame of each second
-        n_first_frames = np.arange(0, max_frame, 30).astype(int)
+        frame_rate = 30
+        n_first_frames = np.arange(0, max_frame, frame_rate).astype(int)
 
         # Select condition indices
         frame_id = self._data.stimulus_conditions.loc[
@@ -255,6 +260,9 @@ class Neuropixel:
         # Get indices
         repeat_idx = self._get_stim_idx(stim_type)
         roi_idx = self._get_roi_idx(roi)
+
+        if roi_idx.size == 0:
+            return None
 
         # Get the counts
         time_step = .001
@@ -339,6 +347,9 @@ class Neuropixel:
         # Add running speed
         self._add_behavioral(df, repeat_idx)
 
+        # Save to disk
+        df.to_csv(str(self.SAVE_DIR / f"session-{self.session}_roi-{roi}_movie-({movie_type})_sec-{sec + 1}.csv"))
+
         return df
 
     def _add_behavioral(self, df, repeat_idx):
@@ -359,6 +370,7 @@ class Neuropixel:
         """
         # Add running speed
         run_data = self._data.running_speed
+        run_data["speed"] = abs(run_data["velocity"])
         for idx in repeat_idx:
             start = df.loc[df.stimulus_presentation_id == idx, "start_time"].mean()  # these are all the same number
             stop = start + 1
@@ -372,14 +384,18 @@ class Neuropixel:
             df.loc[df.stimulus_presentation_id == idx, "mean_speed"] = mean_speed
 
         # Add pupil area
-        pupil_data = self._data.get_screen_gaze_data()[["raw_pupil_area"]]
-        for idx in repeat_idx:
-            start = df.loc[df.stimulus_presentation_id == idx, "start_time"].mean()
-            stop = start + 1
-            area = pupil_data.loc[
-                (pupil_data.index > start) & (pupil_data.index < stop), "raw_pupil_area"
-            ].mean()
-            df.loc[df.stimulus_presentation_id == idx, "pupil_area"] = area
+        try:
+            pupil_data = self._data.get_screen_gaze_data()[["raw_pupil_area"]]
+            for idx in repeat_idx:
+                start = df.loc[df.stimulus_presentation_id == idx, "start_time"].mean()
+                stop = start + 1
+                area = pupil_data.loc[
+                    (pupil_data.index > start) & (pupil_data.index < stop), "raw_pupil_area"
+                ].mean()
+                df.loc[df.stimulus_presentation_id == idx, "pupil_area"] = area
+        except TypeError:
+            print(f"Session {self.session} does not have pupilometry data!")
+            df["pupil_area"] = np.nan
 
     def overall_pupil_run_average(self, bin_size: int):
         """
@@ -398,11 +414,14 @@ class Neuropixel:
         time_bins = np.arange(0, 10000, bin_size)
 
         # Initiate stuff
-        pupil_means = np.zeros((len(self._all_sessions), len(time_bins)))
-        run_means = np.zeros((len(self._all_sessions), len(time_bins)))
-        err = False
+        # pupil_means = np.zeros((len(self._all_sessions), len(time_bins)))
+        # run_means = np.zeros((len(self._all_sessions), len(time_bins)))
+        pupil_means = []
+        run_means = []
 
-        for s, session in tqdm(enumerate(self._all_sessions)):
+        for s, session in tqdm(enumerate(self._all_sessions[:58])):
+
+            # print(f"Reading session: {session}")
 
             # load session metadata
             _data = self.cache.get_session_data(session)
@@ -414,8 +433,8 @@ class Neuropixel:
                 pupil_mean = np.array(
                     [pupil.loc[(pupil.index > b) & (pupil.index < b + 1), "raw_pupil_area"].mean() for b in time_bins]
                 )
+                pupil_means.append(pupil_mean)
             except TypeError:
-                err = True
                 print(f"Session {session} has no eye tracing data!")
 
             try:
@@ -425,14 +444,15 @@ class Neuropixel:
                 run_mean = np.array(
                     [run.loc[(run.start_time > b) & (run.end_time < b + 1), "speed"].mean() for b in time_bins]
                 )
+                run_means.append(run_mean)
             except TypeError:
-                err = True
                 print(f"Session {session} has no running data")
 
-            # save only if both exist
-            if not err:
-                run_means[s] = run_mean
-                pupil_means[s] = pupil_mean
+        # Save
+        pupil_means = np.array(pupil_means)
+        run_means = np.array(run_means)
+        np.save(str(self.SAVE_DIR / f"all_pupil_{bin_size}s_bin.npy"), pupil_means)
+        np.save(str(self.SAVE_DIR / f"all_running_{bin_size}s_bin.npy"), run_means)
 
         return pupil_means, run_means
 
