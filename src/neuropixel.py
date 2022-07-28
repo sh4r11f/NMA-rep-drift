@@ -214,7 +214,7 @@ class Neuropixel:
             Which movie
 
         sec : int
-            Which second.
+            Which second. Starts from 1.
 
         Returns
         -------
@@ -225,7 +225,7 @@ class Neuropixel:
             self._data.stimulus_conditions.stimulus_name == movie_type, "frame"
         ].max()
 
-        # Get the number for the first frame of each second
+        # Get index number for the first frame of each second
         frame_rate = 30
         n_first_frames = np.arange(0, max_frame, frame_rate).astype(int)
 
@@ -239,7 +239,7 @@ class Neuropixel:
             self._data.stimulus_presentations.stimulus_condition_id == frame_id
             ].index.values
 
-        return repeat_idx
+        return frame_id, repeat_idx
 
     def get_stim_spike_count(self, stim_type: str, roi: str):
         """
@@ -304,6 +304,7 @@ class Neuropixel:
         movie_type : str
         roi : str
         sec : int
+            Starts from 1.
 
         Returns
         -------
@@ -314,8 +315,11 @@ class Neuropixel:
         time_bins = np.arange(0, 1 + time_step, time_step)
 
         # Get indices
-        repeat_idx = self._get_movie_idx(movie_type, sec)
+        frame_idx, repeat_idx = self._get_movie_idx(movie_type, sec)
         roi_idx = self._get_roi_idx(roi)
+
+        if roi_idx.size == 0:
+            return None
 
         # Get the counts
         spikes = self._data.presentationwise_spike_counts(
@@ -328,9 +332,12 @@ class Neuropixel:
         spikes = spikes.to_dataframe()
 
         # Add stuff to the dataframe
-        cols = ["start_time", "stop_time", "stimulus_block", "stimulus_name", "stimulus_condition_id"]
+        # add repeat info
+        pres_df = self._data.stimulus_presentations.copy()
+        pres_df.loc[pres_df.stimulus_condition_id == frame_idx, "repeat"] = np.arange(1, len(repeat_idx) + 1)
+        cols = ["start_time", "stop_time", "stimulus_block", "stimulus_name", "stimulus_condition_id", "repeat"]
         spikes = pd.merge(
-            spikes, self._data.stimulus_presentations[cols],
+            spikes, pres_df[cols],
             left_on="stimulus_presentation_id",
             right_index=True
         )
@@ -340,17 +347,54 @@ class Neuropixel:
         grp_cols = ["stimulus_presentation_id", "unit_id"] + cols
         df = spikes.groupby(grp_cols, as_index=False)["spike_counts"].sum()
 
-        # Add info about the roi and which second of the movie
+        # Add info about the mouse, roi, and which second of the movie
+        df["subject"] = self.session
         df["roi"] = roi
         df["movie_sec"] = sec
 
         # Add running speed
         self._add_behavioral(df, repeat_idx)
 
-        # Save to disk
-        df.to_csv(str(self.SAVE_DIR / f"session-{self.session}_roi-{roi}_movie-({movie_type})_sec-{sec + 1}.csv"))
-
         return df
+
+    def generate_processed_movie_data(self, exp_type: str, movie_type: str, rois: list):
+        """
+        Generates or loads clean dataframes with only the columns and stats needed for RSA analysis.
+
+        Returns
+        -------
+        None
+        """
+        # Get all sessions in the experiment type
+        table = self.cache.get_session_table()
+        session_ids = table.loc[table.session_type == exp_type].index.values
+
+        # Movie duration
+        duration = 30 if movie_type == 'natural_movie_one_more_repeats' else 120
+        seconds = np.arange(1, duration + 1)
+
+        for s, sess in enumerate(session_ids):
+            print(f"Session {s + 1 } of {len(session_ids)}.")
+
+            # load session data
+            self.session = sess
+            dfs = []
+
+            for r, roi in enumerate(rois):
+                print(f"ROI {r + 1} of {len(rois)}.")
+
+                for sec in seconds:
+                    print(f"Second {sec} of {duration}.")
+
+                    df = self.get_movie_spike_count(movie_type, roi, sec)
+                    dfs.append(df)
+
+            # Save to disk for each session
+            # get rid of sessions that did not have units in their ROIs, hence None dfs
+            dfs = [df for df in dfs if df is not None]
+            sess_df = pd.concat(dfs, ignore_index=True)
+            sess_df.to_csv(str(self.SAVE_DIR / f"sub-{self.session}_sess-{exp_type}_stim-{movie_type}.csv"))
+            print('---------------------------------------------------')
 
     def _add_behavioral(self, df, repeat_idx):
         """
@@ -394,7 +438,7 @@ class Neuropixel:
                 ].mean()
                 df.loc[df.stimulus_presentation_id == idx, "pupil_area"] = area
         except TypeError:
-            print(f"Session {self.session} does not have pupilometry data!")
+            print(f"Session {self.session} does not have pupillometry data!")
             df["pupil_area"] = np.nan
 
     def overall_pupil_run_average(self, bin_size: int):
